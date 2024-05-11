@@ -1,0 +1,524 @@
+#!/usr/bin/env python3
+#THIS IS THE THIRD PART OF ASSIGNMENT 2 WHICH I HAVE TAKEN IN THE GROUP 4
+import rospy 
+from geometry_msgs.msg import Twist
+from sensor_msgs.msg import LaserScan
+from nav_msgs.msg import Odometry
+from tf.transformations import euler_from_quaternion, quaternion_from_euler
+import numpy as np
+from numpy import inf
+
+global waypoints
+global pose
+global current_waypoint
+global des_rot
+
+global obs1 
+global obs5
+global obs6
+
+global size1
+global size5
+global size6
+
+global yaw1
+global yaw5
+global yaw6
+
+global wall1
+global wall2
+global wall3
+
+global boundary
+global wall4
+global pathplan
+pathplan = 1
+current_waypoint=0
+
+file = open("My_file_assign11.txt","a")
+
+# obs1 = [0.5, 1]
+obs5 = [-1.04, 1.2815650]
+obs6 = [0.203, 0.925]
+
+# size1 = [0.6,1,1]
+size5 = [0.22,0.22,1]
+size6 = [0.24,0.24,1]
+
+# yaw1 = -2.641
+#yaw5 = -0.3075
+#yaw6 = 0.5
+
+q5=[0.005, -0.001196444577713722, -0.5377, 0.8431]
+q6=[0.006512, 0.00432,0.543, 0.839]
+
+[roll5,pitch5,yaw5] = euler_from_quaternion(q5)
+[roll6,pitch6,yaw6] = euler_from_quaternion(q6)
+
+# yaw5 = 2*np.pi/2
+# yaw6 = np.pi/2
+# corners = [[,],[,],[,],[,]]
+
+wall1_start = [2, 2]
+wall1_end   = [-2, 2]
+wall2_start = [ -2, 2]
+wall2_end = [-2,0]
+wall3_start = [ -2,0]
+wall3_end  = [2,0]
+wall4_start = [2, 0]
+wall4_end  =[2,2]
+
+wall1= [wall1_end,wall1_start]
+wall2= [wall2_start,wall2_end]
+wall3= [wall3_start,wall3_end]
+wall4= [wall4_start,wall4_end]
+
+def goal_orient(x,y,theta,xg,yg):
+    theta_d = np.arccos(((xg-x)*np.cos(theta)+ (yg-y)*np.sin(theta))/np.sqrt((xg-x)**2+(yg-y)**2))
+    return theta_d
+
+
+def fourcorners(obs, yaw, size):
+    clearance = 0.25
+    x = size[0] + clearance
+    y = size[1]+ clearance
+    R = ([np.cos(yaw) , -np.sin(yaw)],
+         [np.sin(yaw) ,  np.cos(yaw)])
+
+    corners = []
+    corners.append(np.add(np.transpose(np.dot(R,(x/2,y/2))),obs))
+    corners.append(np.add(np.transpose(np.dot(R,(-x/2,y/2))),obs))
+    corners.append(np.add(np.transpose(np.dot(R,(-x/2,-y/2))),obs))
+    corners.append(np.add(np.transpose(np.dot(R,(x/2,-y/2))),obs))
+
+    edges = []
+
+    edges.append(sorted(corners[0:2], key = lambda x: x[0]))
+    edges.append(sorted(corners[1:3], key = lambda x: x[0]))
+    edges.append(sorted(corners[2:], key = lambda x: x[0]))
+    edges.append(sorted([corners[0],corners[3]], key = lambda x: x[0]))
+
+    return edges, corners   
+
+
+def colliding(pt1,pt2,edges):
+  for edge in edges:
+    [ed1,ed2] = edge
+    den = (ed2[1]-ed1[1])*(pt2[0]-pt1[0]) - (ed2[0]-ed1[0])*(pt2[1]-pt1[1])
+    
+    if den != 0:
+      u = (pt1[0]-ed1[0])*(pt1[1]- pt2[1])- (pt1[1]-ed1[1])*(pt1[0]- pt2[0])
+      t = (pt1[0]-ed1[0])*(ed1[1]- ed2[1])- (pt1[1]-ed1[1])*(ed1[0]- ed2[0])
+
+      u =u/den
+      t=t/den
+      
+      if u<=1 and u>=0 and t<=1 and t>=0:
+        return 1
+    
+    
+  return 0
+
+
+def intersect(x,edge):
+  if edge[1][0]-edge[0][0] != 0:
+    slope = (edge[1][1]-edge[0][1])/(edge[1][0]-edge[0][0])
+    y = edge[0][1] + slope*(x-edge[0][0])
+    b = 1
+  else:
+    y = edge[0][1]
+    b = 0
+  return [y,b]
+
+
+
+def sweepline(edges,corners,boundary_corners,boundary_edges,start,goal):
+  #multidimesnional array
+  #sort edges along x
+  #edges = sorted(poly, key = lambda x: x[0])
+
+  points = {}
+  corners = sorted(corners, key=lambda x:x[0])
+
+  #take the first corner and sort them along y
+  current_edges = []
+  remaining_edges = edges
+  s = 0
+  pts = []
+  x_min = corners[0][0]
+  x_max = corners[-1][0]
+  # print(x_min,x_max)
+
+  for i in range(len(corners)):
+    #determine all the edges of interesection
+    x = corners[i][0]
+    y = corners[i][1]
+
+    if corners[i] in boundary_corners:
+      bound = 1
+    else:
+      bound = 0
+
+
+    intersecting_above = []
+    intersecting_below = []
+
+    for edge in remaining_edges:
+      # print(edge,'edge')
+      if x == edge[0][0] and y == edge[0][1] or x == edge[1][0] and y == edge[1][1]:
+        current_edges.append(edge)
+      elif x>= edge[0][0] and x<= edge[1][0]:
+        [z,b] = intersect(x,edge)
+        # print(z)
+        if z>y and z not in intersecting_above and (b == 1 or bound==0) and (x>x_min) and x<x_max:
+          intersecting_above.append(z)
+        elif z<y and z not in intersecting_below and ( b == 1 or bound ==0) and (x>x_min) and x<x_max:
+          intersecting_below.append(z)
+
+
+
+    n_up   = len(intersecting_above)
+    n_down = len(intersecting_below)
+
+    #print(n_up,n_down)
+
+    if n_up%2==1:
+      #insert line above
+      intersecting_above = sorted(intersecting_above)
+      next_point_above = intersecting_above[0]
+      mid_pt_above = [x,(next_point_above+y)/2]
+      points[s] = mid_pt_above
+      # print(mid_pt_above)
+      pts.append(mid_pt_above)
+      s=s+1
+
+    if n_down%2==1:
+      #insert line below
+      intersecting_below = sorted(intersecting_below)
+      next_point_below = intersecting_below[-1]
+      mid_pt_below = [x,(next_point_below+y)/2]
+      points[s] = mid_pt_below
+      pts.append(mid_pt_below)
+      # print(mid_pt_below)
+      s=s+1
+  
+  
+
+  p = len(pts)
+  for i in range(p):
+    intersec = []
+
+    #check mid-pt
+    if i!=p-1:
+
+      x_mid = (pts[i][0] + pts[i-1][0])/2
+      y_mid = (pts[i][1] + pts[i-1][1])/2
+      for edge in remaining_edges:
+
+        if x_mid>= edge[0][0] and x_mid<= edge[1][0]:
+          [z_mid,b_mid] = intersect(x_mid,edge)
+          intersec.append(z_mid)
+      #print(len(intersec),x_mid,y_mid)
+
+      if len(intersec)==2:
+        z_cen = (intersec[0]+intersec[1])/2
+        pts.append([x_mid,z_cen])
+        #print(x_mid,z_cen)
+        points[s] = [x_mid,z_cen]
+        s=s+1
+
+    # elif i==0:
+    #   x_mid = (corners[0][0] + pts[i][0])/2
+    #   y_mid = (corners[0][1] + pts[i][1])/2
+    #   pts.append([x_mid,y_mid])
+    #   points[s] = [x_mid,y_mid]
+    #   s=s+1
+
+    elif i==p-1 :
+      x_mid = (corners[-1][0] + pts[p-1][0])/2
+      y_mid = (corners[-1][1] + pts[p-1][1])/2
+      pts.append([x_mid,y_mid])
+      points[s] = [x_mid,y_mid]
+      s=s+1
+
+  pts= pts + [start] + [goal]
+  points[s] = start
+  points[s+1] = goal
+
+  pts = sorted(pts, key=lambda x:x[0])
+  for i in range(len(pts)):
+    if pts[i][0] == goal[0] and pts[i][1] == goal[1]:
+      goal_pt = i
+    elif pts[i][0] == start[0] and pts[i][1] == start[1]:
+      start_pt = i 
+
+
+  graph = generate_graph(points,pts,edges)
+
+
+  return graph,pts,goal_pt,start_pt
+
+
+
+
+
+def dijkstra(a,pts,goal_pt,start_pt):
+    # print(pts)
+    n = len(a)
+    start = start_pt
+    goal = goal_pt
+    spset = []
+    parent = []
+    dist = [10000 for j in range(n)]
+    parent = [0 for j in range(n)]
+    dist[start]= 0
+    parent[start]=-1
+    visited =[0 for j in range(n)]
+
+
+
+    while(len(spset)!=n):
+      dist_arg = np.argsort(dist)
+      # print(dist)
+      for j in range(len(dist_arg)):
+        if visited[dist_arg[j]]==0:
+          current_node = dist_arg[j]
+          break
+
+
+      spset.append(current_node)
+      # print(spset)
+
+      for j in range(n):
+        if a[current_node][j]!=0 and visited[j]==0:
+          distance = a[current_node][j]+dist[current_node]
+          if distance<dist[j]:
+            dist[j] = distance
+            parent[j] = current_node
+
+      visited[current_node]=1
+ 
+
+    node = goal
+    dis = 0
+    par = parent[node]
+    path = []
+    path.append(node)
+    # print(parent)
+   
+    while node!=start:
+      par = parent[node]
+      dis = dis + a[par][node]
+      node = par
+      path.append(node)
+
+
+    way=[]
+    for i in range(len(path)):
+        way.append(pts[path[-i-1]])
+
+
+    return way
+
+
+
+
+def generate_graph(pt_dict,pts,edges):
+  n = len(pts)
+  graph = [[0 for i in range(n)]for j in range(n)]
+  graph_new = [[0 for i in range(n)]for j in range(n)]
+  
+  for p in range(len(pts)):
+    [x,y] = pts[p]  #
+    # dist_array = np.subtract(pts,sub_arr)
+    # dist_array = np.absolute(dist_array)
+    dist_array = []
+    for j in range(n):
+      dist_array.append(np.sqrt((x-pts[j][0])**2 + (y-pts[j][1])**2))
+
+    # disp_arr = sorted(dist_array)
+    # arguements = np.argsort(dist_array)
+    for i in range(len(dist_array)):
+      if dist_array[i]!=0:
+        another_pt = pts[i]            
+        if not colliding(pts[p],another_pt,edges):
+          graph[p][i] = dist_array[i] 
+          graph[i][p] = dist_array[i]   
+
+  for i in range(n):
+    for j in range(n):
+      graph_new[i][j] = graph[i][j]        
+          
+  for i in range(n):
+    for j in range(i+1,n):
+      if graph[i][j] != 0:
+        for k in range(j+1,n):
+          if graph[i][k] != 0 and graph[k][j] !=0 :
+            graph_new[i][k] = 0
+            graph_new[k][i]=0
+
+    
+
+  
+  return graph_new
+
+def waypoint_generator(x_start,y_start,x_goal,y_goal):
+    #generating the graph
+    global_corners = []
+    world_edges = []
+
+
+    [edges, corners] = fourcorners(obs5, yaw5, size5)
+    global_corners.append(corners)
+    world_edges.append(edges)
+
+    [edges, corners] = fourcorners(obs6, yaw6, size6)
+    global_corners.append(corners)
+    world_edges.append(edges)
+
+
+    world_corners = []
+
+    for n in range(len(global_corners)):
+      for j in range(4):
+        world_corners.append(global_corners[n][j])
+
+    world_corners = world_corners + wall1 + wall2 +wall3+wall4
+    boundary_corners = wall1 + wall2 +wall3+wall4
+    world_corners = np.array(world_corners)
+    boundary_corners = np.array(boundary_corners)
+
+
+    global_edges= []
+    for n in range(len(world_edges)):
+      for j in range(4):
+        global_edges.append(world_edges[n][j])
+
+    global_edges = global_edges + [wall1] + [wall2] + [wall3] + [wall4]
+    boundary_edges =  [wall1] + [wall2] + [wall3] + [wall4]
+
+    global_edges = np.array(global_edges)
+    boundary_edges = np.array(boundary_edges)
+
+    start = [x_start,y_start]
+    goal = [x_goal,y_goal]
+    [graph,pts,goal,start] = sweepline(global_edges,world_corners,boundary_corners,boundary_edges,start,goal)
+    waypoints = dijkstra(graph,pts,goal,start)
+    return waypoints
+
+
+
+
+def odomdata_callback(msg):
+    global pose
+    global roll
+    global pitch
+    global yaw
+    global file
+    global pathplan
+    global waypoints
+    global current_waypoint
+
+    x = msg.pose.pose.position.x
+    y = msg.pose.pose.position.y
+    z = msg.pose.pose.position.z
+
+    q0 = msg.pose.pose.orientation.x
+    q1 = msg.pose.pose.orientation.y
+    q2 = msg.pose.pose.orientation.z
+    q3 = msg.pose.pose.orientation.w
+
+    pose = [x,y,z]
+    L = str(x) + " "+str(y)+ " " + str(z) + " "+ str(q0) + " "+str(q1)+ " " + str(q2) + " " + str(q3) +"\n"
+
+    file.write(L)
+    [roll, pitch, yaw] = euler_from_quaternion ([q0,q1,q2,q3])
+
+    
+    x = pose[0]-1.98
+    y = pose[1]+0.01
+    
+
+    if pathplan==1:
+        #HERE WE INPUT THE STARTING POINT AND  ENDING POINT STARTING IS ASSUMED TO BE ORIGIN (0,0) AS GAZEBO SPAWNS AT ORIGIN AND ENDING CAN BE ANY POINT IN FREE SPACE HERE IT IS (4,0)
+        waypoints = waypoint_generator(-1.98,0.01,1.97,1.97)
+        print(waypoints,'hello')
+        pathplan = 0 
+
+
+    xg = waypoints[current_waypoint][0]
+    yg = waypoints[current_waypoint][1]
+
+    err_att  = goal_orient(x,y,yaw, xg,yg)
+    err_dist = np.sqrt((x-xg)**2+(y-yg)**2)
+    #print(x,y)
+
+    if err_dist>0.1:
+        if err_att < 0.1:
+            move_the_bot.linear.x  = 0.1
+            move_the_bot.angular.z = 0
+        else:
+            move_the_bot.linear.x  = 0
+            move_the_bot.angular.z = -0.2*err_att
+
+    else:
+        if current_waypoint == len(waypoints)-1:
+            move_the_bot.linear.x  = 0
+            move_the_bot.angular.z = 0
+            print('reached')
+
+        else:
+            current_waypoint = current_waypoint+1
+            print(current_waypoint)
+
+            if err_att < 0.1:
+                move_the_bot.linear.x  = 0.1
+                move_the_bot.angular.z = 0
+            else:
+                move_the_bot.linear.x  = 0
+                move_the_bot.angular.z = 0.1
+
+
+
+    publish_to_cmd_vel.publish(move_the_bot) 
+
+
+
+def laserdata_callback(msg):
+    #Prints the length of ranges array, in our case there are total 360 readings, one reading for each 1 degree
+    #print(len(msg.ranges)) 
+    #To make use of laser data, we will need directional readings. For example, front, back, left and right of the robot. In our case, 0: Front, 180: Back, 90: Right, 270: Left,  are directions of laserbeam for robot
+    #print(msg.ranges[0], msg.ranges[90], msg.ranges[180], msg.ranges[270])
+    #Sample head collision avoidance algorithm(You will have to write your algorithm here)
+    print('not used')
+
+
+
+
+
+    
+
+
+
+
+
+
+
+if __name__ == "__main__":
+
+    rospy.init_node('turtlebot_controller_node')
+    move_the_bot = Twist()
+    # subscribe_to_laser = rospy.Subscriber('/tb3_1/scan', LaserScan, callback = laserdata_callback)
+    # subscribe_to_odom = rospy.Subscriber('/tb3_1/odom', Odometry, callback = odomdata_callback)
+    #subscribe_to_laser = rospy.Subscriber('/scan', LaserScan, callback = laserdata_callback)
+    subscribe_to_odom = rospy.Subscriber('/tb3_0/odom', Odometry, callback = odomdata_callback)
+    rospy.loginfo('My node has been started')
+    # publish_to_cmd_vel = rospy.Publisher('/tb3_1/cmd_vel', Twist, queue_size = 10)
+    publish_to_cmd_vel = rospy.Publisher('/tb3_0/cmd_vel', Twist, queue_size = 10)
+
+    #create an object of Twist data
+
+    
+    rospy.spin()
+
+
